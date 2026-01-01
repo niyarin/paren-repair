@@ -90,6 +90,20 @@
     ;; ビームサーチ用のデータ構造
     ;; ========================================
 
+    ;; インデント情報
+    (define-record-type <indent-info>
+      (make-indent-info column line-number)
+      indent-info?
+      (column indent-column)         ; 列番号（0始まり）
+      (line-number indent-line))     ; 行番号（0始まり）
+
+    ;; 括弧とインデントの対応
+    (define-record-type <paren-context>
+      (make-paren-context token indent)
+      paren-context?
+      (token paren-token)            ; 括弧トークン
+      (indent paren-indent))         ; その括弧のインデント位置 (<indent-info>)
+
     ;; 修正アクション
     (define-record-type <repair-action>
       (make-repair-action action-type position value)
@@ -98,14 +112,16 @@
       (position repair-action-position)
       (value repair-action-value))
 
-    ;; 修正状態
+    ;; 修正状態（インデント情報付き）
     (define-record-type <repair-state>
-      (make-repair-state position paren-stack actions score)
+      (make-repair-state position paren-stack actions score current-indent current-line)
       repair-state?
       (position state-position)      ; 現在のトークン位置
-      (paren-stack state-stack)      ; 開き括弧のスタック
+      (paren-stack state-stack)      ; 開き括弧のスタック (<paren-context>のリスト)
       (actions state-actions)        ; 修正アクション列
-      (score state-score))           ; 累積スコア
+      (score state-score)            ; 累積スコア
+      (current-indent state-current-indent)  ; 現在のインデント（列番号）
+      (current-line state-current-line))     ; 現在の行番号
 
     ;; ========================================
     ;; スコアリング関数
