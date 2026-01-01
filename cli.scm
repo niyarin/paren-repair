@@ -1,11 +1,13 @@
 (include "./scheme-reader/scheme-reader/core.scm")
+(include "./core.scm")
 
 (import (scheme base)
         (scheme process-context)
         (scheme file)
         (scheme write)
         (scheme read)
-        (prefix (scheme-reader core) rdr/))
+        (prefix (scheme-reader core) rdr/)
+        (paren-repair core))
 
 (define (%read-tokens port)
   (let ((cell-top (cons '() '())))
@@ -25,17 +27,99 @@
             (loop (cdr cell)
                   (+ paren-depth paren-depth-diff))))))))
 
+;; アクションからトークン列を再構築
+(define (%apply-actions actions)
+  (let ((result '()))
+    (for-each
+      (lambda (action)
+        (case (repair-action-type action)
+          ((KEEP INSERT)
+           (set! result (append result (list (repair-action-value action)))))
+          ((DELETE)
+           ;; 何もしない
+           #f)))
+      actions)
+    result))
+
+;; トークンを表示用に変換
+(define (%token->string token)
+  (cond
+    ((rdr/lexical? token)
+     (case (rdr/lexical-type token)
+       ((OPEN-PAREN) "(")
+       ((CLOSE-PAREN) ")")
+       ((SPACE) (string (rdr/lexical-data token)))
+       ((NEWLINE) "\n")
+       ((STRING) (string-append "\"" (rdr/lexical-data token) "\""))
+       ((COMMENT) (string-append ";" (rdr/lexical-data token)))
+       (else (if (symbol? (rdr/lexical-data token))
+               (symbol->string (rdr/lexical-data token))
+               (if (string? (rdr/lexical-data token))
+                 (rdr/lexical-data token)
+                 (write-to-string (rdr/lexical-data token)))))))
+    ((symbol? token) (symbol->string token))
+    ((number? token) (number->string token))
+    (else (write-to-string token))))
+
+;; トークン列を文字列に変換
+(define (%tokens->string tokens)
+  (apply string-append (map %token->string tokens)))
+
 (define (%repair-paren filename)
   (call-with-input-file
     filename
     (lambda (port)
       (let-values (((tokens depth) (%read-tokens port)))
-        #;(write
-          (map (lambda (t) (if (rdr/lexical? t) (rdr/lexical-type t) t))
-               tokens ))
-      (if (zero? depth)
-        (begin (write "Ok.")(newline))
-        (begin (write "Fail.")(newline)))))))
+        (display "Original tokens: ")
+        (display (length tokens))
+        (newline)
+        (display "Original depth: ")
+        (display depth)
+        (newline)
+        ;; デバッグ: トークンの内容を表示
+        (display "Token types: ")
+        (for-each (lambda (t)
+                    (display (if (rdr/lexical? t)
+                               (rdr/lexical-type t)
+                               t))
+                    (display " "))
+                  tokens)
+        (newline)
+        (newline)
+
+        ;; ビームサーチで修正
+        (let* ((beam-width 10)
+               (result-state (beam-search tokens beam-width))
+               (repaired-tokens (%apply-actions (state-actions result-state))))
+          (display "Beam search completed!")
+          (newline)
+          (display "Score: ")
+          (display (state-score result-state))
+          (newline)
+          (display "Actions: ")
+          (display (length (state-actions result-state)))
+          (newline)
+          (newline)
+
+          ;; デバッグ: repaired tokensの内容を表示
+          (display "Repaired token types: ")
+          (for-each (lambda (t)
+                      (display (if (rdr/lexical? t)
+                                 (rdr/lexical-type t)
+                                 t))
+                      (display " "))
+                    repaired-tokens)
+          (newline)
+          (newline)
+
+          (display "Repaired code:")
+          (newline)
+          (display "----------------------------------------")
+          (newline)
+          (display (%tokens->string repaired-tokens))
+          (newline)
+          (display "----------------------------------------")
+          (newline))))))
 
 (define (%main args)
   #;(begin
