@@ -2,7 +2,8 @@
   (import (scheme base)
           (prefix (scheme-reader core) rdr/)
           (only (chicken sort) sort)
-          (only (srfi 1) every))
+          (only (srfi 1) every)
+          (prefix (paren-repair stats) stats/))
   (export beam-search
           repair-action-type
           repair-action-value
@@ -180,7 +181,7 @@
       (let ((stack-depth (length (state-stack state))))
         (cond
           ;; 最終状態で括弧が完全に閉じられている
-          ((and is-final? (= stack-depth 0)) 20.0)
+          ((and is-final? (= stack-depth 0)) 10.0)
           ;; 最終状態でまだ開き括弧が残っている（ペナルティ）
           (is-final? (* -5.0 stack-depth))
           ;; 途中状態：深さが浅いほうが良い
@@ -190,12 +191,12 @@
     (define (score-action action-type matched? is-paren?)
       (case action-type
         ((KEEP) (if matched? 10.0 0.0))  ; マッチング成功なら高スコア
-        ((DELETE) (if is-paren? -10.0 -0.5))  ; 括弧の削除は大ペナルティ
+        ((DELETE) (if is-paren? -20.0 -0.5))  ; 括弧の削除は大ペナルティ
         ((INSERT) -5.0)                   ; 挿入は大きなペナルティ（インデントスコアで補正）
         (else 0.0)))
 
-    ;; インデント一貫性スコアを計算
-    (define (calculate-indent-score state action token-positions)
+    ;; インデント一貫性スコアを計算（挿入位置の列と行を受け取る）
+    (define (calculate-indent-score state action insert-col insert-line)
       (if (not (eq? (repair-action-type action) 'INSERT))
         0.0  ; INSERTアクション以外はスコアなし
         (if (null? (state-stack state))
@@ -203,18 +204,76 @@
           (let* ((paren-ctx (car (state-stack state)))
                  (open-indent (paren-indent paren-ctx))
                  (open-col (indent-column open-indent))
-                 (open-line (indent-line open-indent))
-                 (current-col (state-current-indent state))
-                 (current-line (state-current-line state)))
-            (cond
-              ;; 開き括弧と同じ列に配置 -> 最高スコア
-              ((= current-col open-col) 8.0)
-              ;; 同じ行（直後に配置） -> 高スコア
-              ((= current-line open-line) 5.0)
-              ;; 開き括弧より左にある（アンインデント） -> 中スコア
-              ((< current-col open-col) 3.0)
-              ;; インデントがずれている -> ペナルティ
-              (else -3.0))))))
+                 (open-line (indent-line open-indent)))
+            (let ((distance (- insert-col open-col)))
+              (cond
+                ;; 開き括弧と同じ列に配置 -> 最高スコア
+                ((= insert-col open-col) 8.0)
+                ;; 同じ行で遠すぎる（外側の括弧の可能性） -> 大ペナルティ
+                ((and (= insert-line open-line) (>= distance 10)) -15.0)
+                ;; 同じ行（直後に配置） -> 高スコア
+                ((= insert-line open-line) 5.0)
+                ;; それ以外（インデントがずれている） -> ペナルティ
+                (else -10.0)))))))
+
+    ;; 式の長さを計算（トップレベルの要素数のみ、ネストした括弧は1要素）
+    (define (calculate-expr-length root-tokens current-tokens)
+      (let loop ((toks root-tokens) (count 0))
+        (cond
+          ((null? toks) count)
+          ((eq? toks current-tokens) count)
+          ;; 開き括弧: ネスト全体をスキップして1要素として数える
+          ((%open-paren? (car toks))
+           (let skip-nested ((t (cdr toks)) (depth 1))
+             (cond
+               ((null? t) (+ count 1))  ; 括弧が閉じていない場合でも1要素として数える
+               ((eq? t current-tokens) (+ count 1))  ; current-tokensに到達、括弧を1要素として数える
+               ((%open-paren? (car t))
+                (skip-nested (cdr t) (+ depth 1)))
+               ((%close-paren? (car t))
+                (if (= depth 1)
+                  (loop (cdr t) (+ count 1))  ; 括弧を1要素として数えて継続
+                  (skip-nested (cdr t) (- depth 1))))
+               (else
+                (skip-nested (cdr t) depth)))))
+          ;; 空白・コメントはスキップ
+          ((or (%whitespace? (car toks)) (%comment? (car toks)))
+           (loop (cdr toks) count))
+          ;; その他の視覚的トークン（シンボル、数値、文字列など）: 1要素として数える
+          ((%visual-token? (car toks))
+           (loop (cdr toks) (+ count 1)))
+          ;; その他: スキップ
+          (else
+           (loop (cdr toks) count)))))
+
+    ;; トークンからシンボルを抽出
+    (define (extract-symbol token)
+      (cond
+        ((rdr/lexical? token)
+         (let ((data (rdr/lexical-data token)))
+           (if (symbol? data) data #f)))
+        ((symbol? token) token)
+        (else #f)))
+
+    ;; 式の長さスコアを計算
+    (define (calculate-expression-length-score state)
+      (if (not (expr-root-context? (state-expr-root state)))
+        0.0  ; expr-rootがない場合はスコアなし
+        (let* ((expr-root (state-expr-root state))
+               (root-tokens (expr-root-tokens-tail expr-root))
+               ;; 式の長さを計算（開き括弧の次のトークンから現在位置まで）
+               (expr-length (calculate-expr-length root-tokens (state-remaining-tokens state)))
+               ;; 式の先頭がシンボルかチェック
+               (head-token (if (null? root-tokens) #f (car root-tokens)))
+               (head-symbol (extract-symbol head-token)))
+          (if (not head-symbol)
+            0.0  ; シンボルでなければスコアなし
+            (let ((min-length-pair (assq head-symbol stats/minimum-list-length-stats)))
+              (if min-length-pair
+                (if (>= expr-length (cdr min-length-pair))
+                  10.0   ; 最小長さを満たしている: 良い評価
+                  -5.0) ; 最小長さを満たしていない: ペナルティ
+                1.0))))))  ; 連想リストにない: 中くらいの評価
 
     ;; ========================================
     ;; 状態遷移関数
@@ -232,9 +291,8 @@
         (state-remaining-tokens state)  ; リストポインタはそのまま共有
         (state-expr-root state)))
 
-    ;; 閉じ括弧トークンを生成（簡易版）
     (define (make-close-paren-token)
-      (rdr/read-token (open-input-string ")")))
+      (rdr/make-lexical 'CLOSE-PAREN #\)))
 
     ;; 状態から次の候補状態を生成（インデント情報 + expr-root付き）
     (define (expand-state state token token-positions)
@@ -254,7 +312,7 @@
                   ;; スタックが空なら新しいexpr-rootを設定
                   (new-expr-root
                     (if (null? (state-stack state))
-                      (make-expr-root-context paren-ctx remaining)
+                      (make-expr-root-context paren-ctx next-remaining)
                       current-expr-root)))
 
              ;; 遷移1: 開き括弧を保持
@@ -348,22 +406,30 @@
         ;; 注: インデントが合う位置でのみ挿入を許可
         (when (and (not (null? (state-stack state)))
                    (not (%paren? token))
-                   (not (%whitespace? token)))  ; 括弧と空白以外のトークンの前で挿入検討
+                   (not (%space? token)))  ; 括弧とスペース以外のトークンの前で挿入検討（改行前は許可）
           (let* ((paren-ctx (car (state-stack state)))
-                 (open-col (indent-column (paren-indent paren-ctx)))
+                 (open-indent (paren-indent paren-ctx))
+                 (open-col (indent-column open-indent))
+                 (open-line (indent-line open-indent))
                  (current-col token-col)
-                 ;; インデントが減少した（アンインデント）または同じ列の場合のみ挿入
-                 (should-insert? (<= current-col open-col)))
+                 (current-line token-line)
+                 ;; 改行トークンの前で挿入を検討
+                 ;; ただし、開き括弧より左にインデントされた位置では挿入しない（リスト内部の要素を尊重）
+                 (should-insert? (and (%newline? token)
+                                      (or (= current-line open-line)  ; 同じ行の改行
+                                          (>= current-col open-col)))))
             (when should-insert?
               (let* ((new-stack (cdr (state-stack state)))
                      ;; スタックが空になったらexpr-rootをリセット
                      (new-expr-root (if (null? new-stack) #f current-expr-root))
                      (close-paren (make-close-paren-token))
                      (new-action (make-repair-action 'INSERT pos close-paren))
-                     (indent-score (calculate-indent-score state new-action token-positions))
+                     (indent-score (calculate-indent-score state new-action token-col token-line))
+                     (expr-length-score (calculate-expression-length-score state))
                      (new-score (+ (state-score state)
                                   (score-action 'INSERT #f #f)
                                   indent-score
+                                  expr-length-score
                                   (calculate-balance-score
                                     (make-repair-state 0 new-stack '() 0 0 0 '() #f) #f))))
                 (set! candidates
@@ -402,7 +468,10 @@
                (new-stack (cdr (state-stack state)))
                (new-expr-root (if (null? new-stack) #f (state-expr-root state)))
                (new-action (make-repair-action 'INSERT (state-position state) close-paren))
+               (expr-length-score (calculate-expression-length-score state))
                (new-score (+ (state-score state)
+                            (score-action 'INSERT #f #f)  ; INSERTペナルティを追加
+                            expr-length-score
                             (calculate-balance-score
                               (make-repair-state 0 new-stack '() 0 0 0 '() #f)
                               (null? new-stack)))))
