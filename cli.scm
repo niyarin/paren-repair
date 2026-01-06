@@ -1,5 +1,6 @@
 (include "./scheme-reader/scheme-reader/core.scm")
 (include "./stats.scm")
+(include "./token.scm")
 (include "./core.scm")
 
 (import (scheme base)

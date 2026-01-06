@@ -3,6 +3,7 @@
           (prefix (scheme-reader core) rdr/)
           (only (chicken sort) sort)
           (only (srfi 1) every)
+          (prefix (paren-repair token) t/)
           (prefix (paren-repair stats) stats/))
   (export beam-search
           repair-action-type
@@ -10,83 +11,6 @@
           state-actions
           state-score)
   (begin
-    ;; 括弧関連
-    (define (%open-paren? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'OPEN-PAREN)))
-
-    (define (%close-paren? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'CLOSE-PAREN)))
-
-    (define (%paren? token)
-      (or (%open-paren? token)
-          (%close-paren? token)))
-
-    ;; 空白文字関連
-    (define (%space? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'SPACE)))
-
-    (define (%newline? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'NEWLINE)))
-
-    (define (%whitespace? token)
-      (or (%space? token)
-          (%newline? token)))
-
-    ;; コメント
-    (define (%comment? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'COMMENT)))
-
-    ;; クォート関連
-    (define (%quote? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'QUOTE)))
-
-    (define (%quasi-quote? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'QUASI-QUOTE)))
-
-    (define (%unquote? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'UNQUOTE)))
-
-    ;; リテラル
-    (define (%string? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'STRING)))
-
-    (define (%atom? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'ATOM)))
-
-    (define (%keyword? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'KEYWORD)))
-
-    ;; その他
-    (define (%dot? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'DOT)))
-
-    (define (%directive? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'DIRECTIVE)))
-
-    (define (%shebang? token)
-      (and (rdr/lexical? token)
-           (eq? (rdr/lexical-type token) 'SHEBANG)))
-
-    ;; 視覚的なトークン（スペース、改行、コメント、ディレクティブ）
-    (define (%visual-token? token)
-      (or (%space? token)
-          (%newline? token)
-          (%comment? token)
-          (%directive? token)))
-
     ;; ========================================
     ;; ビームサーチ用のデータ構造
     ;; ========================================
@@ -134,49 +58,9 @@
       (expr-root state-expr-root))   ; 現在修正中の式のルート (<expr-root-context> or #f)
 
     ;; ========================================
-    ;; インデント情報の抽出
-    ;; ========================================
-
-    ;; トークンの表示幅を計算
-    (define (token-length token)
-      (cond
-        ((%open-paren? token) 1)
-        ((%close-paren? token) 1)
-        ((%space? token) 1)
-        ((%newline? token) 0)
-        ((%string? token) (+ 2 (string-length (rdr/lexical-data token))))
-        ((%comment? token) (+ 1 (string-length (rdr/lexical-data token))))
-        ((rdr/lexical? token)
-         (let ((data (rdr/lexical-data token)))
-           (cond
-             ((symbol? data) (string-length (symbol->string data)))
-             ((string? data) (string-length data))
-             ((number? data) (string-length (number->string data)))
-             (else 1))))
-        ((symbol? token) (string-length (symbol->string token)))
-        ((number? token) (string-length (number->string token)))
-        (else 1)))
-
-    ;; トークン列から位置情報を抽出
-    (define (extract-token-positions tokens)
-      (let ((positions (make-vector (length tokens))))
-        (let loop ((i 0) (toks tokens) (line 0) (col 0))
-          (if (null? toks)
-            positions
-            (let ((token (car toks)))
-              (vector-set! positions i (make-indent-info col line))
-              (cond
-                ((%newline? token)
-                 (loop (+ i 1) (cdr toks) (+ line 1) 0))
-                (else
-                 (let ((token-len (token-length token)))
-                   (loop (+ i 1) (cdr toks) line (+ col token-len))))))))))
-
-    ;; ========================================
     ;; スコアリング関数
     ;; ========================================
 
-    ;; バランススコアを計算
     (define (calculate-balance-score state is-final?)
       (let ((stack-depth (length (state-stack state))))
         (cond
@@ -216,44 +100,30 @@
                 ;; それ以外（インデントがずれている） -> ペナルティ
                 (else -10.0)))))))
 
-    ;; 式の長さを計算（トップレベルの要素数のみ、ネストした括弧は1要素）
+    ;; e.g. (a b c) => 3
+    ;;      (a (b c) (d e) f) => 4
     (define (calculate-expr-length root-tokens current-tokens)
       (let loop ((toks root-tokens) (count 0))
         (cond
           ((null? toks) count)
           ((eq? toks current-tokens) count)
-          ;; 開き括弧: ネスト全体をスキップして1要素として数える
-          ((%open-paren? (car toks))
+          ((t/open-paren? (car toks))
            (let skip-nested ((t (cdr toks)) (depth 1))
              (cond
-               ((null? t) (+ count 1))  ; 括弧が閉じていない場合でも1要素として数える
-               ((eq? t current-tokens) (+ count 1))  ; current-tokensに到達、括弧を1要素として数える
-               ((%open-paren? (car t))
+               ((null? t) (+ count 1))
+               ((eq? t current-tokens) (+ count 1))
+               ((t/open-paren? (car t))
                 (skip-nested (cdr t) (+ depth 1)))
-               ((%close-paren? (car t))
+               ((t/close-paren? (car t))
                 (if (= depth 1)
-                  (loop (cdr t) (+ count 1))  ; 括弧を1要素として数えて継続
+                  (loop (cdr t) (+ count 1))
                   (skip-nested (cdr t) (- depth 1))))
-               (else
-                (skip-nested (cdr t) depth)))))
-          ;; 空白・コメントはスキップ
-          ((or (%whitespace? (car toks)) (%comment? (car toks)))
+               (else (skip-nested (cdr t) depth)))))
+          ((or (t/whitespace? (car toks)) (t/comment? (car toks)))
            (loop (cdr toks) count))
-          ;; その他の視覚的トークン（シンボル、数値、文字列など）: 1要素として数える
-          ((%visual-token? (car toks))
+          ((t/visual-token? (car toks))
            (loop (cdr toks) (+ count 1)))
-          ;; その他: スキップ
-          (else
-           (loop (cdr toks) count)))))
-
-    ;; トークンからシンボルを抽出
-    (define (extract-symbol token)
-      (cond
-        ((rdr/lexical? token)
-         (let ((data (rdr/lexical-data token)))
-           (if (symbol? data) data #f)))
-        ((symbol? token) token)
-        (else #f)))
+          (else (loop (cdr toks) count)))))
 
     ;; 式の長さスコアを計算
     (define (calculate-expression-length-score state)
@@ -265,7 +135,7 @@
                (expr-length (calculate-expr-length root-tokens (state-remaining-tokens state)))
                ;; 式の先頭がシンボルかチェック
                (head-token (if (null? root-tokens) #f (car root-tokens)))
-               (head-symbol (extract-symbol head-token)))
+               (head-symbol (t/extract-symbol head-token)))
           (if (not head-symbol)
             0.0  ; シンボルでなければスコアなし
             (let ((min-length-pair (assq head-symbol stats/minimum-list-length-stats)))
@@ -291,9 +161,6 @@
         (state-remaining-tokens state)  ; リストポインタはそのまま共有
         (state-expr-root state)))
 
-    (define (make-close-paren-token)
-      (rdr/make-lexical 'CLOSE-PAREN #\)))
-
     ;; 状態から次の候補状態を生成（インデント情報 + expr-root付き）
     (define (expand-state state token token-positions)
       (let* ((pos (state-position state))
@@ -306,7 +173,7 @@
              (candidates '()))
         (cond
           ;; トークンが開き括弧の場合
-          ((%open-paren? token)
+          ((t/open-paren? token)
            (let* ((paren-ctx (make-paren-context token token-indent-info))
                   (new-stack (cons paren-ctx (state-stack state)))
                   ;; スタックが空なら新しいexpr-rootを設定
@@ -349,7 +216,7 @@
                        candidates)))))
 
           ;; トークンが閉じ括弧の場合
-          ((%close-paren? token)
+          ((t/close-paren? token)
            (if (not (null? (state-stack state)))
              ;; 遷移1: マッチング成功
              (let* ((new-stack (cdr (state-stack state)))
@@ -405,8 +272,8 @@
         ;; 遷移3: 任意の位置で閉じ括弧を挿入（スタックが空でない場合のみ）
         ;; 注: インデントが合う位置でのみ挿入を許可
         (when (and (not (null? (state-stack state)))
-                   (not (%paren? token))
-                   (not (%space? token)))  ; 括弧とスペース以外のトークンの前で挿入検討（改行前は許可）
+                   (not (t/paren? token))
+                   (not (t/space? token)))  ; 括弧とスペース以外のトークンの前で挿入検討（改行前は許可）
           (let* ((paren-ctx (car (state-stack state)))
                  (open-indent (paren-indent paren-ctx))
                  (open-col (indent-column open-indent))
@@ -415,14 +282,14 @@
                  (current-line token-line)
                  ;; 改行トークンの前で挿入を検討
                  ;; ただし、開き括弧より左にインデントされた位置では挿入しない（リスト内部の要素を尊重）
-                 (should-insert? (and (%newline? token)
+                 (should-insert? (and (t/newline? token)
                                       (or (= current-line open-line)  ; 同じ行の改行
                                           (>= current-col open-col)))))
             (when should-insert?
               (let* ((new-stack (cdr (state-stack state)))
                      ;; スタックが空になったらexpr-rootをリセット
                      (new-expr-root (if (null? new-stack) #f current-expr-root))
-                     (close-paren (make-close-paren-token))
+                     (close-paren (t/make-close-paren-token))
                      (new-action (make-repair-action 'INSERT pos close-paren))
                      (indent-score (calculate-indent-score state new-action token-col token-line))
                      (expr-length-score (calculate-expression-length-score state))
@@ -464,7 +331,7 @@
     (define (close-remaining-parens state)
       (if (null? (state-stack state))
         (list state)
-        (let* ((close-paren (make-close-paren-token))
+        (let* ((close-paren (t/make-close-paren-token))
                (new-stack (cdr (state-stack state)))
                (new-expr-root (if (null? new-stack) #f (state-expr-root state)))
                (new-action (make-repair-action 'INSERT (state-position state) close-paren))
@@ -488,7 +355,10 @@
 
     ;; ビームサーチのメインループ（インデント情報 + remaining-tokens付き）
     (define (beam-search tokens beam-width)
-      (let* ((token-positions (extract-token-positions tokens))
+      (let* ((token-positions
+               (vector-map
+                 (lambda (x) (make-indent-info (car x) (cdr x)))
+                 (t/extract-token-positions tokens)))
              (initial-state (make-repair-state 0 '() '() 0.0 0 0 tokens #f))
              (num-tokens (length tokens)))
         (let loop ((beam (list initial-state)))
@@ -511,6 +381,4 @@
                                        (expand-state state token token-positions))))
                                  beam)))
                    (filtered-beam (select-top-k next-beam beam-width)))
-              (loop filtered-beam))))))
-
-    ))
+              (loop filtered-beam))))))))
