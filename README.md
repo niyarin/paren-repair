@@ -1,5 +1,7 @@
 # Paren repair
-Fixing broken parentheses in R{7,6,5}RS Scheme source code.
+This software corrects missing or extra parentheses using beam-search–based scoring in R{7,6,5}RS Scheme source code.
+It repairs parentheses by considering not only indentation but also syntactic correctness, evaluated via a pushdown automaton.
+
 
 ## Build
 ```sh
