@@ -1,5 +1,4 @@
 (include "./scheme-reader/scheme-reader/core.scm")
-(include "./stats.scm")
 (include "./token.scm")
 (include "./syntax-checker/rules.scm")
 (include "./syntax-checker/core.scm")
