@@ -70,6 +70,50 @@
         ((let-body any) -> (let-body ()))
         ))
 
+    ;; let* syntax rules
+    (define let*-rules
+      '(
+        ;; let* keyword
+        ((after-open (symbol let*)) -> (let-after-keyword ()))
+        ))
+
+    ;; if syntax rules
+    (define if-rules
+      '(
+        ;; if keyword
+        ((after-open (symbol if)) -> (if-test ()))
+        ;; Test expression
+        ((if-test open-paren) -> (if-test-expr (push if-test-ctx)))
+        ((if-test symbol) -> (if-consequent ()))
+        ((if-test any) -> (if-consequent ()))
+        ;; Test expression (when it's a list)
+        ((if-test-expr open-paren) -> (if-test-expr (push normal)))
+        ((if-test-expr close-paren (stack-top normal)) -> (if-test-expr (pop)))
+        ((if-test-expr close-paren (stack-top if-test-ctx)) -> (if-consequent (pop)))
+        ((if-test-expr any) -> (if-test-expr ()))
+        ;; Consequent expression
+        ((if-consequent open-paren) -> (if-consequent-expr (push if-consequent-ctx)))
+        ((if-consequent symbol) -> (if-after-consequent ()))
+        ((if-consequent any) -> (if-after-consequent ()))
+        ;; Consequent expression (when it's a list)
+        ((if-consequent-expr open-paren) -> (if-consequent-expr (push normal)))
+        ((if-consequent-expr close-paren (stack-top normal)) -> (if-consequent-expr (pop)))
+        ((if-consequent-expr close-paren (stack-top if-consequent-ctx)) -> (if-after-consequent (pop)))
+        ((if-consequent-expr any) -> (if-consequent-expr ()))
+        ;; After consequent - alternate or close
+        ((if-after-consequent close-paren) -> (normal (pop)))
+        ((if-after-consequent open-paren) -> (if-alternate-expr (push if-alternate-ctx)))
+        ((if-after-consequent symbol) -> (if-after-alternate ()))
+        ((if-after-consequent any) -> (if-after-alternate ()))
+        ;; Alternate expression (when it's a list)
+        ((if-alternate-expr open-paren) -> (if-alternate-expr (push normal)))
+        ((if-alternate-expr close-paren (stack-top normal)) -> (if-alternate-expr (pop)))
+        ((if-alternate-expr close-paren (stack-top if-alternate-ctx)) -> (if-after-alternate (pop)))
+        ((if-alternate-expr any) -> (if-alternate-expr ()))
+        ;; After alternate - must close
+        ((if-after-alternate close-paren) -> (normal (pop)))
+        ))
+
     ;; case syntax rules
     (define case-rules
       '(
@@ -161,6 +205,8 @@
       (append basic-paren-rules
               define-rules
               let-rules
+              let*-rules
+              if-rules
               case-rules
               cond-rules
               default-rules))

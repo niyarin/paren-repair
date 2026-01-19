@@ -216,6 +216,34 @@
                          (make-space) (make-open) (make-open) (make-num 1)))
        => 'valid)
 
+;; if
+;; Pattern 1: if without alternate
+(check (check-type (list (make-open) (make-sym 'if) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-close)))
+       => 'complete)
+
+(check (check-type (list (make-open) (make-sym 'if) (make-space)
+                         (make-open) (make-sym 'eq?) (make-space) (make-sym 'x) (make-space) (make-num 0) (make-close)
+                         (make-space) (make-num 1) (make-close)))
+       => 'complete)
+
+;; Pattern 2: if with alternate
+(check (check-type (list (make-open) (make-sym 'if) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-space) (make-num 2) (make-close)))
+       => 'complete)
+
+(check (check-type (list (make-open) (make-sym 'if) (make-space)
+                         (make-open) (make-sym '<) (make-space) (make-sym 'x) (make-space) (make-num 10) (make-close)
+                         (make-space) (make-open) (make-sym '+) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-close)
+                         (make-space) (make-open) (make-sym '-) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-close)
+                         (make-close)))
+       => 'complete)
+
+;; Pattern 3: if with too many expressions (invalid)
+(check (check-type (list (make-open) (make-sym 'if) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-space) (make-num 2) (make-space) (make-num 3) (make-close)))
+       => 'invalid)
+
+(check (check-type (list (make-open) (make-sym 'if) (make-space) (make-sym 'x) (make-space) (make-num 1) (make-space) (make-num 2) (make-space) (make-num 3) (make-space) (make-num 4) (make-close)))
+       => 'invalid)
+
 ;; Regular Lists
 (check (check-type (list (make-open) (make-sym 'foo) (make-space) (make-num 1) (make-close)))
        => 'complete)
